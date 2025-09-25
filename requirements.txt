@@ -1,0 +1,13 @@
+# Django and related packages
+django
+djangorestframework
+django-cors-headers
+
+# Environment variables
+python-dotenv
+
+# API Clients
+apify-client
+gspread
+google-auth-oauthlib
+google-auth-httplib2
