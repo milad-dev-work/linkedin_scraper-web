@@ -8,13 +8,20 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-your-secret-key-here' # لطفاً این کلید را در محیط پروداکشن تغییر دهید
+# این کلید نباید به صورت ثابت در کد باشد. برای محیط پروداکشن، آن را در متغیرهای محیطی سرور ذخیره کنید.
+# مثال: SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY')
+SECRET_KEY = 'django-insecure-your-secret-key-here'
 
 # SECURITY WARNING: don't run with debug turned on in production!
+# در محیط پروداکشن، این مقدار باید False باشد تا اطلاعات حساس پروژه نمایش داده نشود.
+# مثال: DEBUG = os.environ.get('DJANGO_DEBUG', 'False').lower() in ('true', '1', 't')
 DEBUG = True
 
+# برای محیط پروداکشن، به جای '*' آدرس دقیق دامنه‌های خود را وارد کنید.
+# مثال: ALLOWED_HOSTS = ['your-domain.com', 'www.your-domain.com']
+ALLOWED_HOSTS = ['*'] # برای توسعه محلی مناسب است
+
 # آدرس فرانت‌اند را برای CORS اضافه کنید
-ALLOWED_HOSTS = ['*'] # برای توسعه محلی مناسب است، در پروداکشن محدود کنید
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:8080", # اگر فرانت‌اند روی پورت دیگری است، آن را اضافه کنید
     "http://127.0.0.1:8080",
@@ -72,7 +79,7 @@ WSGI_APPLICATION = 'linkedin_scraper.wsgi.application'
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 # برای این پروژه به دیتابیس نیازی نداریم، از sqlite پیش‌فرض استفاده می‌کنیم
 DATABASES = {
-    'default': { # <--- اصلاح شد: 'DEFAULT' به 'default' تغییر کرد
+    'default': {
         'ENGINE': 'django.db.backends.sqlite3',
         'NAME': BASE_DIR / 'db.sqlite3',
     }

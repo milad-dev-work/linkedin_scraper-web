@@ -33,6 +33,18 @@ class GoogleSheetsService:
             logger.error(f"خطا در دریافت مقادیر ستون: {e}")
             return set()
 
+    def get_header_map(self, worksheet: gspread.Worksheet) -> dict:
+        """
+        ردیف اول (هدرها) را می‌خواند و یک دیکشنری از نام هدر به شماره ستون برمی‌گرداند.
+        این کار باعث می‌شود کد نسبت به جابجایی ستون‌ها مقاوم باشد.
+        """
+        try:
+            headers = worksheet.row_values(1)
+            return {header: i + 1 for i, header in enumerate(headers)}
+        except Exception as e:
+            logger.error(f"خطا در خواندن هدرهای شیت: {e}")
+            return {}
+
     def append_row(self, worksheet: gspread.Worksheet, row_data: list):
         try:
             worksheet.append_row(row_data)

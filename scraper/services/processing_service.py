@@ -94,7 +94,9 @@ def process_contact_data(scraped_items: List[Dict[str, Any]], original_job_data:
         "emails": ', '.join(unique_emails),
         "linkedin": get_first_unique_link(all_linkedins),
         "twitter": get_first_unique_link(all_twitters),
-        "instagram": get_first_unique_link(all_facebooks),
+        # [FIXED] باگ اصلاح شد: اینستاگرام از لیست خودش خوانده می‌شود و فیسبوک اضافه شده است
+        "instagram": get_first_unique_link(all_instagrams),
+        "facebook": get_first_unique_link(all_facebooks),
         "youtube": get_first_unique_link(all_youtubes),
     }
     return clean_data

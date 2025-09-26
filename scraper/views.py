@@ -17,6 +17,31 @@ load_dotenv()
 # دریافت لاگر
 logger = logging.getLogger(__name__)
 
+# [IMPROVEMENT] ترتیب ستون‌های مورد انتظار در گوگل شیت
+# این کار باعث می‌شود افزودن ردیف جدید به ترتیب ستون‌ها وابسته نباشد
+EXPECTED_HEADERS = [
+    'employmentType', 'companyName', 'companyCountry', 'companyWebsite', 'postedAt',
+    'phones', 'emails', 'title', 'linkedin', 'link', 'fullCompanyAddress',
+    'twitter', 'instagram', 'facebook', 'youtube'
+]
+
+def format_address(address_dict: dict) -> str:
+    """
+    [IMPROVEMENT] یک دیکشنری آدرس را به یک رشته خوانا تبدیل می‌کند.
+    """
+    if not isinstance(address_dict, dict):
+        return str(address_dict) # بازگشت به حالت قبل برای انواع داده غیرمنتظره
+
+    parts = [
+        address_dict.get('addressStreet'),
+        address_dict.get('addressLocality'),
+        address_dict.get('addressRegion'),
+        address_dict.get('postalCode'),
+        address_dict.get('addressCountry')
+    ]
+    return ', '.join(filter(None, parts))
+
+
 def run_scraping_task(country: str, job_keyword: str):
     """
     تابع اصلی که تمام منطق اسکرپینگ را در یک ترد جداگانه اجرا می‌کند.
@@ -37,9 +62,19 @@ def run_scraping_task(country: str, job_keyword: str):
     try:
         sheets_service = GoogleSheetsService(google_service_account_path, google_sheet_id)
         worksheet = sheets_service.get_worksheet("Sheet1")
-        # بهینه‌سازی: لینک‌های موجود را یک بار در ابتدا می‌خوانیم
-        LINK_COLUMN_INDEX = 10 # ستون لینک شغل در شیت
-        existing_links = sheets_service.get_column_values(worksheet, LINK_COLUMN_INDEX)
+        
+        # [IMPROVEMENT] خواندن هدرها برای یافتن ایندکس ستون لینک به صورت داینامیک
+        header_map = sheets_service.get_header_map(worksheet)
+        if not header_map:
+            logger.error("هدرهای Google Sheet خوانده نشد. فرآیند متوقف شد.")
+            return
+            
+        link_column_index = header_map.get('link')
+        if not link_column_index:
+            logger.error("ستون 'link' در Google Sheet یافت نشد. فرآیند متوقف شد.")
+            return
+
+        existing_links = sheets_service.get_column_values(worksheet, link_column_index)
         logger.info(f"تعداد {len(existing_links)} لینک شغل از Google Sheets خوانده شد.")
     except Exception as e:
         logger.error(f"خطا در اتصال به Google Sheets: {e}")
@@ -91,27 +126,33 @@ def run_scraping_task(country: str, job_keyword: str):
 
             # == ماژول سوم: افزودن داده‌ها به Google Sheets ==
             logger.info("ماژول ۳: در حال آماده‌سازی و افزودن ردیف جدید به Google Sheets...")
-            new_row = [
-                job.get('employmentType', ''),
-                job.get('companyName', ''),
-                job.get('companyAddress', {}).get('addressCountry', ''),
-                job.get('companyWebsite', ''),
-                job.get('postedAt', ''),
-                contact_info.get('phones', ''),
-                contact_info.get('emails', ''),
-                job.get('title', ''),
-                contact_info.get('linkedin', ''),
-                job.get('link', ''), # این باید در ستون ۱۰ باشد
-                # داده‌های اضافی در ستون‌های بعدی
-                str(job.get('companyAddress', '')),
-                contact_info.get('twitter', ''),
-                contact_info.get('instagram', ''),
-                contact_info.get('facebook', ''),
-                contact_info.get('youtube', ''),
-            ]
+
+            # [IMPROVEMENT] ساخت دیکشنری از داده‌ها برای افزودن به شیت
+            row_data = {
+                'employmentType': job.get('employmentType', ''),
+                'companyName': job.get('companyName', ''),
+                'companyCountry': job.get('companyAddress', {}).get('addressCountry', ''),
+                'companyWebsite': job.get('companyWebsite', ''),
+                'postedAt': job.get('postedAt', ''),
+                'phones': contact_info.get('phones', ''),
+                'emails': contact_info.get('emails', ''),
+                'title': job.get('title', ''),
+                'linkedin': contact_info.get('linkedin', ''),
+                'link': job.get('link', ''),
+                'fullCompanyAddress': format_address(job.get('companyAddress', {})),
+                'twitter': contact_info.get('twitter', ''),
+                'instagram': contact_info.get('instagram', ''),
+                'facebook': contact_info.get('facebook', ''),
+                'youtube': contact_info.get('youtube', ''),
+            }
+
+            # ساخت لیست نهایی بر اساس ترتیب هدرها
+            new_row = [row_data.get(header, '') for header in EXPECTED_HEADERS]
 
             sheets_service.append_row(worksheet, new_row)
             logger.info(f"شغل '{job_title}' با موفقیت به Google Sheets اضافه شد.")
+            # اضافه کردن لینک جدید به لیست لینک‌های موجود برای جلوگیری از پردازش مجدد در همین اجرا
+            existing_links.add(job_link)
 
         except Exception as e:
             # مدیریت خطای داخل حلقه طبق توضیحات ویس
@@ -126,21 +167,26 @@ class ScrapeJobsView(APIView):
     این View درخواست POST را برای شروع فرآیند استخراج اطلاعات دریافت می‌کند.
     """
     def post(self, request, *args, **kwargs):
-        # دریافت داده‌ها از بدنه درخواست
         country = request.data.get('country')
         job = request.data.get('job')
 
-        # اعتبارسنجی ورودی‌ها
+        # [FIXED] اعتبارسنجی ورودی‌ها بهبود یافت تا از خطای لیست خالی جلوگیری شود
         if not country or not job:
             return Response(
-                {"error": "پارامترهای 'country' و 'job' الزامی هستند."},
+                {"error": "پارامترهای 'country' و 'job' الزامی هستند و نمی‌توانند خالی باشند."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # طبق توضیحات ویس، فعلاً با یک ورودی کار می‌کنیم
-        # اگر آرایه بود، اولین آیتم را انتخاب می‌کنیم
+        # اگر ورودی لیست بود، اولین آیتم را انتخاب کن
         country_to_process = country[0] if isinstance(country, list) and country else country
         job_to_process = job[0] if isinstance(job, list) and job else job
+
+        # بررسی مجدد برای اطمینان از خالی نبودن مقادیر پس از پردازش
+        if not country_to_process or not job_to_process:
+            return Response(
+                {"error": "مقادیر 'country' و 'job' نمی‌توانند خالی باشند."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         logger.info(f"درخواست جدید دریافت شد: Country='{country_to_process}', Job='{job_to_process}'")
 
