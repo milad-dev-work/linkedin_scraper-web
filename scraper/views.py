@@ -1,6 +1,7 @@
 import logging
 import threading
 import os
+import uuid # Used to generate unique task IDs
 from dotenv import load_dotenv
 
 from rest_framework.views import APIView
@@ -11,14 +12,19 @@ from .services.apify_service import ApifyService
 from .services.google_sheets_service import GoogleSheetsService
 from .services.processing_service import build_linkedin_url, process_contact_data
 
-# بارگذاری متغیرهای محیطی از فایل .env
+# Load environment variables from .env file
 load_dotenv()
 
-# دریافت لاگر
+# Get the logger
 logger = logging.getLogger(__name__)
 
-# [IMPROVEMENT] ترتیب ستون‌های مورد انتظار در گوگل شیت
-# این کار باعث می‌شود افزودن ردیف جدید به ترتیب ستون‌ها وابسته نباشد
+# --- Task Status Tracking ---
+# A simple in-memory dictionary to store the status of scraping tasks.
+# In a production environment, you would use a more persistent solution like Redis or a database.
+tasks_status = {}
+
+# [IMPROVEMENT] Expected order of columns in the Google Sheet.
+# This makes the row appending logic independent of the column order.
 EXPECTED_HEADERS = [
     'employmentType', 'companyName', 'companyCountry', 'companyWebsite', 'postedAt',
     'phones', 'emails', 'title', 'linkedin', 'link', 'fullCompanyAddress',
@@ -27,10 +33,10 @@ EXPECTED_HEADERS = [
 
 def format_address(address_dict: dict) -> str:
     """
-    [IMPROVEMENT] یک دیکشنری آدرس را به یک رشته خوانا تبدیل می‌کند.
+    [IMPROVEMENT] Converts an address dictionary into a readable string.
     """
     if not isinstance(address_dict, dict):
-        return str(address_dict) # بازگشت به حالت قبل برای انواع داده غیرمنتظره
+        return str(address_dict)
 
     parts = [
         address_dict.get('addressStreet'),
@@ -42,92 +48,99 @@ def format_address(address_dict: dict) -> str:
     return ', '.join(filter(None, parts))
 
 
-def run_scraping_task(country: str, job_keyword: str):
+def run_scraping_task(country: str, job_keyword: str, task_id: str, current_job_index: int, total_jobs: int):
     """
-    تابع اصلی که تمام منطق اسکرپینگ را در یک ترد جداگانه اجرا می‌کند.
+    The core scraping logic for a single country and job keyword combination.
+    This function will be called repeatedly by the main task runner.
     """
-    logger.info(f"شروع فرآیند اسکرپینگ برای شغل '{job_keyword}' در '{country}'")
-    
-    # ۱. دریافت توکن‌ها و شناسه‌ها از متغیرهای محیطی
+    # Update task status to indicate which job is being processed
+    status_message = f"Processing {current_job_index}/{total_jobs}: '{job_keyword}' in '{country}'"
+    tasks_status[task_id]['status'] = 'running'
+    tasks_status[task_id]['progress'] = status_message
+    logger.info(f"Task [{task_id}]: {status_message}")
+
+    # 1. Get tokens and IDs from environment variables
     try:
         apify_api_token = os.environ["APIFY_API_TOKEN"]
         google_sheet_id = os.environ["GOOGLE_SHEET_ID"]
         google_service_account_path = os.environ["GOOGLE_SERVICE_ACCOUNT_PATH"]
     except KeyError as e:
-        logger.error(f"متغیر محیطی ضروری یافت نشد: {e}. لطفاً فایل .env را بررسی کنید.")
+        error_message = f"Missing essential environment variable: {e}. Please check your .env file."
+        logger.error(f"Task [{task_id}]: {error_message}")
+        tasks_status[task_id]['status'] = 'failed'
+        tasks_status[task_id]['error'] = error_message
         return
 
-    # ۲. ساخت کلاینت‌های سرویس
+    # 2. Instantiate service clients
     apify_service = ApifyService(apify_api_token)
     try:
         sheets_service = GoogleSheetsService(google_service_account_path, google_sheet_id)
         worksheet = sheets_service.get_worksheet("Sheet1")
         
-        # [IMPROVEMENT] خواندن هدرها برای یافتن ایندکس ستون لینک به صورت داینامیک
         header_map = sheets_service.get_header_map(worksheet)
         if not header_map:
-            logger.error("هدرهای Google Sheet خوانده نشد. فرآیند متوقف شد.")
-            return
+            raise Exception("Could not read headers from the Google Sheet.")
             
         link_column_index = header_map.get('link')
         if not link_column_index:
-            logger.error("ستون 'link' در Google Sheet یافت نشد. فرآیند متوقف شد.")
-            return
+            raise Exception("Column 'link' not found in the Google Sheet.")
 
         existing_links = sheets_service.get_column_values(worksheet, link_column_index)
-        logger.info(f"تعداد {len(existing_links)} لینک شغل از Google Sheets خوانده شد.")
+        logger.info(f"Task [{task_id}]: Successfully read {len(existing_links)} existing job links from Google Sheets.")
     except Exception as e:
-        logger.error(f"خطا در اتصال به Google Sheets: {e}")
+        error_message = f"Error connecting to Google Sheets: {e}"
+        logger.error(f"Task [{task_id}]: {error_message}")
+        tasks_status[task_id]['status'] = 'failed'
+        tasks_status[task_id]['error'] = error_message
         return
 
-    # == ماژول اول: اجرای اکتور اول Apify برای استخراج مشاغل ==
-    logger.info("ماژول ۱: در حال اجرای اکتور استخراج مشاغل...")
+    # == Module 1: Run the first Apify actor to scrape jobs ==
+    logger.info(f"Task [{task_id}]: Module 1: Running job scraper actor...")
     search_url = build_linkedin_url(keyword=job_keyword, location_name=country)
-    logger.info(f"URL جستجوی ساخته شده: {search_url}")
+    logger.info(f"Task [{task_id}]: Built search URL: {search_url}")
 
     job_items = apify_service.run_linkedin_job_scraper(search_url)
 
     if not job_items:
-        logger.warning("ماژول ۱: هیچ شغلی برای پردازش یافت نشد. فرآیند متوقف شد.")
+        logger.warning(f"Task [{task_id}]: Module 1: No jobs found for this query. Moving to the next item.")
         return
         
-    logger.info(f"ماژول ۱: تعداد {len(job_items)} شغل با موفقیت استخراج شد.")
+    logger.info(f"Task [{task_id}]: Module 1: Successfully scraped {len(job_items)} jobs.")
 
-    # == حلقه پردازش مشاغل ==
+    # == Job Processing Loop ==
     for job in job_items:
         try:
             job_link = job.get('link')
             job_title = job.get('title')
 
             if not job_link:
-                logger.warning(f"شغل '{job_title}' لینک ندارد و نادیده گرفته می‌شود.")
+                logger.warning(f"Task [{task_id}]: Job '{job_title}' has no link and will be skipped.")
                 continue
 
             if job_link in existing_links:
-                logger.info(f"شغل '{job_title}' قبلاً در شیت موجود است. رد می‌شود.")
+                logger.info(f"Task [{task_id}]: Job '{job_title}' already exists in the sheet. Skipping.")
                 continue
 
-            logger.info(f"شروع پردازش برای شغل: '{job_title}'")
+            logger.info(f"Task [{task_id}]: Starting processing for job: '{job_title}'")
             company_website = job.get('companyWebsite')
             contact_info = {}
 
-            # == ماژول دوم: اجرای اکتور دوم برای استخراج اطلاعات تماس ==
+            # == Module 2: Run the second actor to scrape contact details ==
             if company_website:
-                logger.info(f"ماژول ۲: در حال استخراج اطلاعات تماس از وب‌سایت: {company_website}")
+                logger.info(f"Task [{task_id}]: Module 2: Scraping contact info from: {company_website}")
                 contact_results = apify_service.run_contact_detail_scraper(company_website)
                 
                 if contact_results:
                     contact_info = process_contact_data(contact_results, job)
-                    logger.info(f"اطلاعات تماس برای '{job.get('companyName')}' با موفقیت پردازش شد.")
+                    logger.info(f"Task [{task_id}]: Successfully processed contact info for '{job.get('companyName')}'.")
                 else:
-                    logger.warning(f"اطلاعات تماسی برای وب‌سایت {company_website} یافت نشد.")
+                    logger.warning(f"Task [{task_id}]: No contact info found for website {company_website}.")
             else:
-                logger.info("وب‌سایت شرکت یافت نشد، از استخراج اطلاعات تماس صرف‌نظر می‌شود.")
+                logger.info(f"Task [{task_id}]: Company website not found, skipping contact info scraping.")
 
-            # == ماژول سوم: افزودن داده‌ها به Google Sheets ==
-            logger.info("ماژول ۳: در حال آماده‌سازی و افزودن ردیف جدید به Google Sheets...")
+            # == Module 3: Append data to Google Sheets ==
+            logger.info(f"Task [{task_id}]: Module 3: Preparing and appending new row to Google Sheets...")
 
-            # [IMPROVEMENT] ساخت دیکشنری از داده‌ها برای افزودن به شیت
             row_data = {
                 'employmentType': job.get('employmentType', ''),
                 'companyName': job.get('companyName', ''),
@@ -145,57 +158,106 @@ def run_scraping_task(country: str, job_keyword: str):
                 'facebook': contact_info.get('facebook', ''),
                 'youtube': contact_info.get('youtube', ''),
             }
-
-            # ساخت لیست نهایی بر اساس ترتیب هدرها
             new_row = [row_data.get(header, '') for header in EXPECTED_HEADERS]
 
             sheets_service.append_row(worksheet, new_row)
-            logger.info(f"شغل '{job_title}' با موفقیت به Google Sheets اضافه شد.")
-            # اضافه کردن لینک جدید به لیست لینک‌های موجود برای جلوگیری از پردازش مجدد در همین اجرا
+            logger.info(f"Task [{task_id}]: Job '{job_title}' successfully added to Google Sheets.")
             existing_links.add(job_link)
 
         except Exception as e:
-            # مدیریت خطای داخل حلقه طبق توضیحات ویس
-            logger.error(f"خطا در پردازش شغل '{job.get('title', 'Unknown')}': {e}. به سراغ آیتم بعدی می‌رویم.")
-            continue # ادامه به شغل بعدی در حلقه
+            logger.error(f"Task [{task_id}]: Error processing job '{job.get('title', 'Unknown')}': {e}. Continuing to the next job.")
+            continue
 
-    logger.info("تمام مشاغل پردازش شدند. فرآیند با موفقیت به پایان رسید.")
+    logger.info(f"Task [{task_id}]: Finished processing all jobs for '{job_keyword}' in '{country}'.")
+
+
+def run_task_for_all_combinations(task_id: str, job_combinations: list):
+    """
+    The main task runner that iterates through all country-job combinations.
+    """
+    total_jobs = len(job_combinations)
+    logger.info(f"Task [{task_id}]: Starting main task runner for {total_jobs} combinations.")
+    
+    for i, combo in enumerate(job_combinations):
+        run_scraping_task(
+            country=combo['country'],
+            job_keyword=combo['job'],
+            task_id=task_id,
+            current_job_index=i + 1,
+            total_jobs=total_jobs
+        )
+    
+    tasks_status[task_id]['status'] = 'completed'
+    tasks_status[task_id]['progress'] = f"Completed all {total_jobs} tasks."
+    logger.info(f"Task [{task_id}]: All combinations have been processed. Task completed.")
 
 
 class ScrapeJobsView(APIView):
     """
-    این View درخواست POST را برای شروع فرآیند استخراج اطلاعات دریافت می‌کند.
+    This View receives the POST request to start the scraping process.
+    It now supports single string or list of strings for 'country' and 'job'.
     """
     def post(self, request, *args, **kwargs):
-        country = request.data.get('country')
-        job = request.data.get('job')
+        countries = request.data.get('country')
+        jobs = request.data.get('job')
 
-        # [FIXED] اعتبارسنجی ورودی‌ها بهبود یافت تا از خطای لیست خالی جلوگیری شود
-        if not country or not job:
+        # --- Input validation ---
+        if not countries or not jobs:
             return Response(
-                {"error": "پارامترهای 'country' و 'job' الزامی هستند و نمی‌توانند خالی باشند."},
+                {"error": "'country' and 'job' parameters are required and cannot be empty."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Convert single string inputs to lists to handle them uniformly
+        if isinstance(countries, str):
+            countries = [countries]
+        if isinstance(jobs, str):
+            jobs = [jobs]
+
+        # Create a list of all combinations to be processed
+        job_combinations = [{'country': c, 'job': j} for c in countries for j in jobs if c and j]
+
+        if not job_combinations:
+            return Response(
+                {"error": "No valid country/job combinations to process after filtering empty values."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # اگر ورودی لیست بود، اولین آیتم را انتخاب کن
-        country_to_process = country[0] if isinstance(country, list) and country else country
-        job_to_process = job[0] if isinstance(job, list) and job else job
+        # --- Task Initialization ---
+        task_id = str(uuid.uuid4())
+        tasks_status[task_id] = {
+            'status': 'queued',
+            'progress': 'Task is waiting to be processed.',
+            'total_combinations': len(job_combinations)
+        }
+        logger.info(f"New request received. Task ID [{task_id}] created for {len(job_combinations)} combinations.")
 
-        # بررسی مجدد برای اطمینان از خالی نبودن مقادیر پس از پردازش
-        if not country_to_process or not job_to_process:
-            return Response(
-                {"error": "مقادیر 'country' و 'job' نمی‌توانند خالی باشند."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        logger.info(f"درخواست جدید دریافت شد: Country='{country_to_process}', Job='{job_to_process}'")
-
-        # ایجاد و اجرای ترد جدید برای جلوگیری از بلاک شدن پاسخ
-        task_thread = threading.Thread(target=run_scraping_task, args=(country_to_process, job_to_process))
+        # Create and start a new thread to run the task in the background
+        task_thread = threading.Thread(target=run_task_for_all_combinations, args=(task_id, job_combinations))
         task_thread.start()
 
-        # بازگرداندن پاسخ فوری به کاربر
+        # Return an immediate response to the user with the task_id
         return Response(
-            {"message": "درخواست شما با موفقیت ثبت شد. فرآیند استخراج اطلاعات در پس‌زمینه شروع شده است."},
+            {
+                "message": "Your request has been successfully submitted. The scraping process has started in the background.",
+                "task_id": task_id
+            },
             status=status.HTTP_202_ACCEPTED
         )
+
+
+class ScrapeStatusView(APIView):
+    """
+    This View allows clients to check the status of a scraping task using its ID.
+    """
+    def get(self, request, task_id, *args, **kwargs):
+        task_info = tasks_status.get(task_id)
+
+        if not task_info:
+            return Response(
+                {"error": "Task ID not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        return Response(task_info, status=status.HTTP_200_OK)
+
