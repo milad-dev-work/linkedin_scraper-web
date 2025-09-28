@@ -20,15 +20,13 @@ logger = logging.getLogger(__name__)
 
 # --- Task Status Tracking ---
 # A simple in-memory dictionary to store the status of scraping tasks.
-# In a production environment, you would use a more persistent solution like Redis or a database.
 tasks_status = {}
 
-# [IMPROVEMENT] Expected order of columns in the Google Sheet.
-# This makes the row appending logic independent of the column order.
+# [اصلاح شد] ستون‌های جدید برای هماهنگی با n8n اضافه شدند
 EXPECTED_HEADERS = [
     'employmentType', 'companyName', 'companyCountry', 'companyWebsite', 'postedAt',
     'phones', 'emails', 'title', 'linkedin', 'link', 'fullCompanyAddress',
-    'twitter', 'instagram', 'facebook', 'youtube'
+    'twitter', 'instagram', 'facebook', 'youtube', 'tiktok', 'pinterest', 'discord', 'email sent'
 ]
 
 def format_address(address_dict: dict) -> str:
@@ -51,15 +49,12 @@ def format_address(address_dict: dict) -> str:
 def run_scraping_task(country: str, job_keyword: str, task_id: str, current_job_index: int, total_jobs: int):
     """
     The core scraping logic for a single country and job keyword combination.
-    This function will be called repeatedly by the main task runner.
     """
-    # Update task status to indicate which job is being processed
     status_message = f"Processing {current_job_index}/{total_jobs}: '{job_keyword}' in '{country}'"
     tasks_status[task_id]['status'] = 'running'
     tasks_status[task_id]['progress'] = status_message
     logger.info(f"Task [{task_id}]: {status_message}")
 
-    # 1. Get tokens and IDs from environment variables
     try:
         apify_api_token = os.environ["APIFY_API_TOKEN"]
         google_sheet_id = os.environ["GOOGLE_SHEET_ID"]
@@ -71,7 +66,6 @@ def run_scraping_task(country: str, job_keyword: str, task_id: str, current_job_
         tasks_status[task_id]['error'] = error_message
         return
 
-    # 2. Instantiate service clients
     apify_service = ApifyService(apify_api_token)
     try:
         sheets_service = GoogleSheetsService(google_service_account_path, google_sheet_id)
@@ -94,7 +88,6 @@ def run_scraping_task(country: str, job_keyword: str, task_id: str, current_job_
         tasks_status[task_id]['error'] = error_message
         return
 
-    # == Module 1: Run the first Apify actor to scrape jobs ==
     logger.info(f"Task [{task_id}]: Module 1: Running job scraper actor...")
     search_url = build_linkedin_url(keyword=job_keyword, location_name=country)
     logger.info(f"Task [{task_id}]: Built search URL: {search_url}")
@@ -107,7 +100,6 @@ def run_scraping_task(country: str, job_keyword: str, task_id: str, current_job_
         
     logger.info(f"Task [{task_id}]: Module 1: Successfully scraped {len(job_items)} jobs.")
 
-    # == Job Processing Loop ==
     for job in job_items:
         try:
             job_link = job.get('link')
@@ -125,7 +117,6 @@ def run_scraping_task(country: str, job_keyword: str, task_id: str, current_job_
             company_website = job.get('companyWebsite')
             contact_info = {}
 
-            # == Module 2: Run the second actor to scrape contact details ==
             if company_website:
                 logger.info(f"Task [{task_id}]: Module 2: Scraping contact info from: {company_website}")
                 contact_results = apify_service.run_contact_detail_scraper(company_website)
@@ -138,9 +129,9 @@ def run_scraping_task(country: str, job_keyword: str, task_id: str, current_job_
             else:
                 logger.info(f"Task [{task_id}]: Company website not found, skipping contact info scraping.")
 
-            # == Module 3: Append data to Google Sheets ==
             logger.info(f"Task [{task_id}]: Module 3: Preparing and appending new row to Google Sheets...")
 
+            # [اصلاح شد] فیلدهای جدید برای هماهنگی با n8n به دیکشنری اضافه شدند
             row_data = {
                 'employmentType': job.get('employmentType', ''),
                 'companyName': job.get('companyName', ''),
@@ -157,6 +148,10 @@ def run_scraping_task(country: str, job_keyword: str, task_id: str, current_job_
                 'instagram': contact_info.get('instagram', ''),
                 'facebook': contact_info.get('facebook', ''),
                 'youtube': contact_info.get('youtube', ''),
+                'tiktok': contact_info.get('tiktok', ''),
+                'pinterest': contact_info.get('pinterest', ''),
+                'discord': contact_info.get('discord', ''),
+                'email sent': '', # این ستون مطابق n8n فعلا خالی است
             }
             new_row = [row_data.get(header, '') for header in EXPECTED_HEADERS]
 
@@ -195,26 +190,22 @@ def run_task_for_all_combinations(task_id: str, job_combinations: list):
 class ScrapeJobsView(APIView):
     """
     This View receives the POST request to start the scraping process.
-    It now supports single string or list of strings for 'country' and 'job'.
     """
     def post(self, request, *args, **kwargs):
         countries = request.data.get('country')
         jobs = request.data.get('job')
 
-        # --- Input validation ---
         if not countries or not jobs:
             return Response(
                 {"error": "'country' and 'job' parameters are required and cannot be empty."},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Convert single string inputs to lists to handle them uniformly
         if isinstance(countries, str):
             countries = [countries]
         if isinstance(jobs, str):
             jobs = [jobs]
 
-        # Create a list of all combinations to be processed
         job_combinations = [{'country': c, 'job': j} for c in countries for j in jobs if c and j]
 
         if not job_combinations:
@@ -223,7 +214,6 @@ class ScrapeJobsView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # --- Task Initialization ---
         task_id = str(uuid.uuid4())
         tasks_status[task_id] = {
             'status': 'queued',
@@ -232,11 +222,9 @@ class ScrapeJobsView(APIView):
         }
         logger.info(f"New request received. Task ID [{task_id}] created for {len(job_combinations)} combinations.")
 
-        # Create and start a new thread to run the task in the background
         task_thread = threading.Thread(target=run_task_for_all_combinations, args=(task_id, job_combinations))
         task_thread.start()
 
-        # Return an immediate response to the user with the task_id
         return Response(
             {
                 "message": "Your request has been successfully submitted. The scraping process has started in the background.",

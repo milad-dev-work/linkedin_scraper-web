@@ -9,13 +9,15 @@ from urllib.parse import urlencode
 def build_linkedin_url(keyword: str, location_name: str, sort_by: str = "DD") -> str:
     """
     یک URL معتبر برای جستجوی مشاغل در لینکدین با پارامترهای اصلی می‌سازد.
-    فیلترهای اضافی حذف شده‌اند تا با ساختار ساده‌تر API هماهنگ باشد.
+    [اصلاح شد] فیلترهای ثابت برای مشاغل دورکار و زمان انتشار (۲۴ ساعت اخیر) اضافه شد.
     """
     base_url = "https://www.linkedin.com/jobs/search/"
     params = {
         "keywords": keyword,
         "location": location_name,
-        "sortBy": sort_by
+        "sortBy": sort_by,
+        "f_TPR": "r86400",  # فیلتر زمان: ۲۴ ساعت گذشته
+        "f_WT": "2"         # فیلتر نوع کار: 2 = Remote
     }
     query_string = urlencode(params)
     return f"{base_url}?{query_string}"
@@ -59,6 +61,7 @@ def _clean_emails(emails: List[str]) -> List[str]:
 def process_contact_data(scraped_items: List[Dict[str, Any]], original_job_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     داده‌های خام استخراج شده از اسکرپر اطلاعات تماس را پردازش و تجمیع می‌کند.
+    [اصلاح شد] شبکه‌های اجتماعی جدید اضافه شدند.
     """
     if not scraped_items:
         return {}
@@ -70,6 +73,9 @@ def process_contact_data(scraped_items: List[Dict[str, Any]], original_job_data:
     all_instagrams: List[str] = []
     all_facebooks: List[str] = []
     all_youtubes: List[str] = []
+    all_tiktoks: List[str] = []
+    all_pinterests: List[str] = []
+    all_discords: List[str] = []
     
     for item in scraped_items:
         all_emails.extend(item.get('emails', []))
@@ -80,6 +86,9 @@ def process_contact_data(scraped_items: List[Dict[str, Any]], original_job_data:
         all_instagrams.extend(item.get('instagrams', []))
         all_facebooks.extend(item.get('facebooks', []))
         all_youtubes.extend(item.get('youtubes', []))
+        all_tiktoks.extend(item.get('tiktoks', []))
+        all_pinterests.extend(item.get('pinterests', []))
+        all_discords.extend(item.get('discords', []))
         
     unique_phones = _clean_phones(all_phones)
     unique_emails = _clean_emails(all_emails)
@@ -94,9 +103,11 @@ def process_contact_data(scraped_items: List[Dict[str, Any]], original_job_data:
         "emails": ', '.join(unique_emails),
         "linkedin": get_first_unique_link(all_linkedins),
         "twitter": get_first_unique_link(all_twitters),
-        # [FIXED] باگ اصلاح شد: اینستاگرام از لیست خودش خوانده می‌شود و فیسبوک اضافه شده است
         "instagram": get_first_unique_link(all_instagrams),
         "facebook": get_first_unique_link(all_facebooks),
         "youtube": get_first_unique_link(all_youtubes),
+        "tiktok": get_first_unique_link(all_tiktoks),
+        "pinterest": get_first_unique_link(all_pinterests),
+        "discord": get_first_unique_link(all_discords),
     }
     return clean_data
