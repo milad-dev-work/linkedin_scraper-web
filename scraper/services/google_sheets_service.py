@@ -31,7 +31,8 @@ class GoogleSheetsService:
             return set(values[1:]) if values else set()
         except Exception as e:
             logger.error(f"خطا در دریافت مقادیر ستون: {e}")
-            return set()
+            # [اصلاح شد] خطا به سطح بالاتر پرتاب می‌شود تا فرآیند متوقف شود
+            raise
 
     def get_header_map(self, worksheet: gspread.Worksheet) -> dict:
         """
@@ -40,7 +41,10 @@ class GoogleSheetsService:
         """
         try:
             headers = worksheet.row_values(1)
-            return {header: i + 1 for i, header in enumerate(headers)}
+            # [جدید] لاگ برای نمایش هدرهای خوانده شده جهت خطایابی
+            logger.info(f"Headers actually read from Google Sheet: {headers}")
+            # [اصلاح شد] استفاده از strip() برای حذف فاصله‌های اضافی و نامرئی از نام هدرها
+            return {header.strip(): i + 1 for i, header in enumerate(headers)}
         except Exception as e:
             logger.error(f"خطا در خواندن هدرهای شیت: {e}")
             return {}
@@ -51,3 +55,4 @@ class GoogleSheetsService:
         except Exception as e:
             logger.error(f"خطا در افزودن ردیف: {e}")
             raise
+

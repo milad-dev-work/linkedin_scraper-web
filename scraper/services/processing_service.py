@@ -3,28 +3,27 @@ from typing import List, Dict, Any, Set
 from urllib.parse import urlencode
 
 #=====================================================#
-#  بخش مربوط به ساخت URL لینکدین (از linkedin_url_builder.py)
+#  بخش مربوط به ساخت URL لینکدین
 #=====================================================#
 
-def build_linkedin_url(keyword: str, location_name: str, sort_by: str = "DD") -> str:
+def build_linkedin_url(keyword: str, location_name: str) -> str:
     """
     یک URL معتبر برای جستجوی مشاغل در لینکدین با پارامترهای اصلی می‌سازد.
-    [اصلاح شد] فیلترهای ثابت برای مشاغل دورکار و زمان انتشار (۲۴ ساعت اخیر) اضافه شد.
+    این تابع ساده‌سازی شده تا با اکتور جدید که URL کامل را می‌پذیرد، سازگار باشد.
     """
     base_url = "https://www.linkedin.com/jobs/search/"
     params = {
         "keywords": keyword,
         "location": location_name,
-        "sortBy": sort_by,
-        "f_TPR": "r86400",  # فیلتر زمان: ۲۴ ساعت گذشته
-        "f_WT": "2"         # فیلتر نوع کار: 2 = Remote
     }
+    # سایر فیلترها مانند زمان انتشار یا نوع کار، باید توسط کاربر در فرانت‌اند
+    # یا مستقیماً در URL اعمال شوند، مطابق با مستندات اکتور جدید.
     query_string = urlencode(params)
     return f"{base_url}?{query_string}"
 
 
 #=====================================================#
-#   بخش مربوط به پردازش داده (از data_processor.py)
+#   بخش مربوط به پردازش داده
 #=====================================================#
 
 def _clean_and_get_unique_items(items: List[str]) -> List[str]:
@@ -61,7 +60,6 @@ def _clean_emails(emails: List[str]) -> List[str]:
 def process_contact_data(scraped_items: List[Dict[str, Any]], original_job_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     داده‌های خام استخراج شده از اسکرپر اطلاعات تماس را پردازش و تجمیع می‌کند.
-    [اصلاح شد] شبکه‌های اجتماعی جدید اضافه شدند.
     """
     if not scraped_items:
         return {}

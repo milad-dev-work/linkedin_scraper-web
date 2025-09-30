@@ -1,4 +1,5 @@
 import logging
+import os
 from apify_client import ApifyClient
 
 logger = logging.getLogger(__name__)
@@ -12,16 +13,21 @@ class ApifyService:
         if not api_token:
             raise ValueError("Apify API token is required.")
         self.client = ApifyClient(api_token)
-        # شناسه‌های اکتورها در اینجا تعریف می‌شوند
-        self.LINKEDIN_ACTOR_ID = "hKByXkMQaC5Qt9UMN"
-        self.CONTACT_SCRAPER_ACTOR_ID = "2RxbxbuelHKumjdS6"
+
+        # [اصلاح شد] شناسه‌ها از متغیرهای محیطی خوانده می‌شوند
+        self.LINKEDIN_ACTOR_ID = os.environ.get("LINKEDIN_ACTOR_ID")
+        self.CONTACT_SCRAPER_ACTOR_ID = os.environ.get("CONTACT_SCRAPER_ACTOR_ID")
+
+        if not self.LINKEDIN_ACTOR_ID or not self.CONTACT_SCRAPER_ACTOR_ID:
+            raise ValueError("Actor IDs (LINKEDIN_ACTOR_ID, CONTACT_SCRAPER_ACTOR_ID) must be set in the .env file.")
+
 
     def _run_actor(self, actor_id: str, run_input: dict) -> list:
         """
         یک متد عمومی برای اجرای هر اکتور و دریافت نتایج.
         """
         try:
-            logger.info(f"در حال اجرای اکتور با شناسه: {actor_id}")
+            logger.info(f"در حال اجرای اکتور با شناسه: {actor_id} و ورودی: {run_input}")
             actor_run = self.client.actor(actor_id).call(run_input=run_input)
             
             logger.info(f"در حال دریافت نتایج از دیتاست {actor_run['defaultDatasetId']}...")
@@ -31,22 +37,18 @@ class ApifyService:
             
         except Exception as e:
             logger.error(f"خطا در حین اجرای اکتور {actor_id}: {e}")
-            # طبق توضیحات ویس، در صورت خطا، لیست خالی برمی‌گردانیم تا فرآیند اصلی متوجه خطا شود
             return []
 
-    def run_linkedin_job_scraper(self, search_url: str, count: int = 100) -> list:
+    def run_linkedin_job_scraper(self, search_url: str, max_results: int = 100, proxy_group: str = "RESIDENTIAL") -> list:
         """
-        اکتور استخراج مشاغل لینکدین را اجرا می‌کند (ماژول اول).
+        اکتور استخراج مشاغل لینکدین را اجرا می‌کند.
+        [اصلاح شد] پارامتر proxy_group اضافه شد تا با فراخوانی هماهنگ باشد.
         """
         run_input = {
-            "urls": [search_url],
-            "scrapeCompany": True,
-            "count": count,
-            "proxyConfiguration": {
-                "useApifyProxy": True,
-                "apifyProxyGroups": ["RESIDENTIAL"]
-            },
-            "maxConcurrency": 5
+            "search_url": search_url,
+            "include_company_details": True,
+            "max_results": max_results,
+            "proxy_group": proxy_group.upper()
         }
         return self._run_actor(self.LINKEDIN_ACTOR_ID, run_input)
 
